@@ -74,9 +74,21 @@ async def main() -> None:
     client = None
     if API_ID and API_HASH:
         import re
+        import base64
         import httpx
         from anilist_api import fetch_anilist, SEARCH_QUERY, DETAIL_QUERY, build_caption
         from banner_maker import generate_banner
+
+        # Support SESSION_STRING env variable (for Render/cloud deployment)
+        SESSION_NAME = 'anime_forwarder'
+        session_string = os.getenv("SESSION_STRING", "")
+        if session_string:
+            session_path = f"{SESSION_NAME}.session"
+            if not os.path.exists(session_path):
+                logger.info("Restoring session from SESSION_STRING env variable...")
+                with open(session_path, 'wb') as f:
+                    f.write(base64.b64decode(session_string))
+                logger.info("Session file restored successfully.")
 
         # Cache to prevent duplicate banners (Key: (anime_id, episode), Value: timestamp)
         # Using a simple dict for now
