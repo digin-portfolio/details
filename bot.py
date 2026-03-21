@@ -58,16 +58,100 @@ async def main() -> None:
     # 2. Setup UserBot (Telethon)
     client = None
     if API_ID and API_HASH:
+        import re
+        import httpx
+        from anilist_api import fetch_anilist, SEARCH_QUERY, DETAIL_QUERY, build_caption
+        from banner_maker import generate_banner
+
+        # Cache to prevent duplicate banners (Key: (anime_id, episode), Value: timestamp)
+        # Using a simple dict for now
+        last_posted_banners = {}
+
         client = TelegramClient('anime_forwarder', API_ID, API_HASH)
         
         @client.on(events.NewMessage(chats=SOURCE_CH_ID))
         async def forward_media(event):
-            if event.message.media:
-                try:
-                    logger.info(f"Forwarding media from source channel ({SOURCE_CH_ID}) to {BOT_CHANNEL}")
-                    await client.forward_messages(BOT_CHANNEL, event.message, drop_author=True)
-                except Exception as e:
-                    logger.error(f"Forwarding error: {e}")
+            if not event.message.media:
+                return
+
+            try:
+                # 1. Extract Info
+                text = event.message.text or ""
+                filename = event.message.file.name if event.message.file else ""
+                
+                logger.info(f"New media detected! Text: '{text[:30]}...', File: '{filename}'")
+                
+                # Simple extraction logic: prioritize text before '|' or first line
+                # Then look for episode numbers
+                title_query = ""
+                ep_num = ""
+
+                # Try to get episode from filename (e.g., S1 01 - Name)
+                if filename:
+                    ep_match = re.search(r"(?:S\d+\s+)?(\d+)", filename, re.I)
+                    if ep_match:
+                        ep_num = ep_match.group(1).lstrip('0') or '1'
+                    
+                    # Try to extract title between episode and quality
+                    title_match = re.search(r"\d+\s*-\s*([^\[\.]+)", filename)
+                    if title_match:
+                        title_query = title_match.group(1).strip()
+
+                if not title_query and text:
+                    title_query = text.split('\n')[0].split('|')[0].strip()
+                    if not ep_num:
+                        ep_match = re.search(r"Episode[:\s]*(\d+)", text, re.I)
+                        if ep_match:
+                            ep_num = ep_match.group(1)
+
+                # 2. Automated Banner Logic
+                if title_query:
+                    logger.info(f"Analyzing for banner: '{title_query}' Ep: '{ep_num}'")
+                    
+                    # Search AniList
+                    search_data = await fetch_anilist(SEARCH_QUERY, {"search": title_query})
+                    results = search_data.get("data", {}).get("Page", {}).get("media", [])
+                    
+                    if results:
+                        media = results[0]
+                        anime_id = str(media["id"])
+                        ep_key = ep_num or "1"
+                        cache_key = (anime_id, ep_key)
+
+                        # Check if we posted this recently (within 5 minutes)
+                        import time
+                        now = time.time()
+                        if cache_key not in last_posted_banners or (now - last_posted_banners[cache_key] > 300):
+                            logger.info(f"Generating automated banner for {title_query} Ep {ep_key}")
+                            
+                            # Get full details
+                            full_data = await fetch_anilist(DETAIL_QUERY, {"id": int(anime_id)})
+                            full_media = full_data["data"]["Media"]
+                            
+                            caption = build_caption(full_media, ep_key)
+                            cover_url = (full_media.get("coverImage") or {}).get("extraLarge") or (full_media.get("coverImage") or {}).get("large")
+                            
+                            if cover_url:
+                                async with httpx.AsyncClient(timeout=20) as c:
+                                    img_resp = await c.get(cover_url)
+                                    cover_bytes = img_resp.content
+                                banner_bytes = generate_banner(full_media, cover_bytes)
+                                
+                                # Use Telethon to send the banner (file)
+                                await client.send_file(
+                                    BOT_CHANNEL, 
+                                    banner_bytes, 
+                                    caption=caption, 
+                                    parse_mode='markdown'
+                                )
+                                last_posted_banners[cache_key] = now
+                
+                # 3. Finally forward the file
+                logger.info(f"Forwarding media to {BOT_CHANNEL}")
+                await client.forward_messages(BOT_CHANNEL, event.message, drop_author=True)
+
+            except Exception as e:
+                logger.error(f"Forwarding/Banner error: {e}")
         
         await client.start()
         logger.info("UserBot started and listening to source channel.")
