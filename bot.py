@@ -180,8 +180,14 @@ async def main() -> None:
             except Exception as e:
                 logger.error(f"Forwarding/Banner error: {e}")
         
-        await client.start()
-        logger.info("UserBot started and listening to source channel.")
+        await client.connect()
+        if not await client.is_user_authorized():
+            logger.error("UserBot is NOT authorized! Set SESSION_STRING env variable on Render.")
+            logger.error("Run the bot locally first to generate a session, then encode it.")
+            client = None  # Disable userbot, still allow PTB bot to run
+        else:
+            logger.info("UserBot authorized and listening to source channel.")
+
 
     # 3. Start PTB polling
     await app.initialize()
