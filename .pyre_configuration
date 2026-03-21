@@ -1,0 +1,16 @@
+{
+  "source_directories": [
+    "."
+  ],
+  "ignore_all_errors": [
+    "bot.py",
+    "bot_handlers.py",
+    "upload_pipeline.py",
+    "config.py",
+    "anilist_api.py",
+    "watchlist.py",
+    "banner_maker.py",
+    "qbit_client.py",
+    "torrent_search.py"
+  ]
+}

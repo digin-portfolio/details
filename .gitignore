@@ -1,0 +1,21 @@
+# Environment variables (Sensitive)
+.env
+
+# Telethon session files (Sensitive)
+*.session
+*.session-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+env/
+venv/
+.venv/
+
+# Data files (Sensitive or per-user)
+alerts.json
+watchlist.json
+
+# Thumbnails (Optional)
+# thumb.jpg
