@@ -1,4 +1,5 @@
 import os
+import time
 import asyncio
 import http.server
 import socketserver
@@ -22,10 +23,9 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/plain")
         self.end_headers()
     def log_message(self, format, *args):
-        pass  # Keep logs clean
+        pass
 
 def start_health_check():
-    """A simple HTTP server to satisfy Render's port binding requirement."""
     port = int(os.getenv("PORT", "8080"))
     try:
         logger.info(f"Starting health check server on port {port}...")
@@ -36,30 +36,26 @@ def start_health_check():
         logger.error(f"Health check server failed to start: {e}")
 
 async def main() -> None:
-    # 0. Show ASCII Art
     print(r"""
     
-    ░█████╗░███╗░░██╗██╗███╗░░░███╗███████╗  ███████╗███████╗████████╗░█████╗░██╗░░██╗███████╗██████╗░
-    ██╔══██╗████╗░██║██║████╗░████║██╔════╝  ██╔════╝██╔════╝╚══██╔══╝██╔══██╗██║░░██║██╔════╝██╔══██╗
-    ███████║██╔██╗██║██║██╔████╔██║█████╗░░  █████╗░░█████╗░░░░░██║░░░██║░░╚═╝███████║█████╗░░██████╔╝
-    ██╔══██║██║╚████║██║██║╚██╔╝██║██╔══╝░░  ██╔══╝░░██╔══╝░░░░░██║░░░██║░░██╗██╔══██║██╔══╝░░██╔══██╗
-    ██║░░██║██║░╚███║██║██║░╚═╝░██║███████╗  ██║░░░░░███████╗░░░██║░░░╚█████╔╝██║░░██║███████╗██║░░██║
-    ╚═╝░░╚═╝╚═╝░░╚══╝╚═╝╚═╝░░░░░╚═╝╚══════╝  ╚═╝░░░░░╚══════╝░░░╚═╝░░░░╚════╝░╚═╝░░╚═╝╚══════╝╚═╝░░╚═╝
+    ░█████╗░███╗░░██╗██╗███╗░░░███╗███████╗  ███████╗███████╗████████╗░█████╗░██╗░░██╗███████╗██████╗░
+    ██╔══██╗████╗░██║██║████╗░████║██╔════╝  ██╔════╝██╔════╝╚══██╔══╝██╔══██╗██║░░██║██╔════╝██╔══██╗
+    ███████║██╔██╗██║██║██╔████╔██║█████╗░░  █████╗░░█████╗░░░░░██║░░░██║░░╚═╝███████║█████╗░░██████╔╝
+    ██╔══██║██║╚████║██║██║╚██╔╝██║██╔══╝░░  ██╔══╝░░██╔══╝░░░░░██║░░░██║░░██╗██╔══██║██╔══╝░░██╔══██╗
+    ██║░░██║██║░╚███║██║██║░╚═╝░██║███████╗  ██║░░░░░███████╗░░░██║░░░╚█████╔╝██║░░██║███████╗██║░░██║
+    ╚═╝░░╚═╝╚═╝░░╚══╝╚═╝╚═╝░░░░░╚═╝╚══════╝  ╚═╝░░░░░╚══════╝░░░╚═╝░░░░╚════╝░╚═╝░░╚═╝╚══════╝╚═╝░░╚═╝
     
     Version 2.0 | Automated Forwarder & Banner Maker
     -------------------------------------------------
     """)
 
-    # 0. Start Health Check for Render (Free Tier)
     threading.Thread(target=start_health_check, daemon=True).start()
-
 
     token = os.getenv("BOT_TOKEN")
     if not token:
         logger.error("BOT_TOKEN is missing!")
         return
 
-    # 1. Setup PTB Application
     app = (
         Application.builder()
         .token(token)
@@ -70,7 +66,6 @@ async def main() -> None:
     )
     setup_handlers(app)
 
-    # 2. Setup UserBot (Telethon)
     client = None
     if API_ID and API_HASH:
         import re
@@ -79,7 +74,6 @@ async def main() -> None:
         from anilist_api import fetch_anilist, SEARCH_QUERY, DETAIL_QUERY, build_caption
         from banner_maker import generate_banner
 
-        # Support SESSION_STRING env variable (for Render/cloud deployment)
         SESSION_NAME = 'anime_forwarder'
         session_string = os.getenv("SESSION_STRING", "")
         if session_string:
@@ -90,113 +84,157 @@ async def main() -> None:
                     f.write(base64.b64decode(session_string))
                 logger.info("Session file restored successfully.")
 
-        # Cache to prevent duplicate banners (Key: (anime_id, episode), Value: timestamp)
-        # Using a simple dict for now
-        last_posted_banners = {}
+        last_posted_banners: dict = {}
+        banner_in_progress: set = set()
+
+        # ── Album / media-group state ─────────────────────────────────────────
+        # grouped_id → {"messages": [...], "task": asyncio.Task | None}
+        pending_albums: dict = {}
+        ALBUM_WAIT = 1.5  # seconds to wait before flushing an album
 
         client = TelegramClient('anime_forwarder', API_ID, API_HASH)
-        
+
+        def _extract_title_ep(text: str, filename: str):
+            title_query, ep_num = "", ""
+            if filename:
+                ep_match = re.search(r"(?:S\d+\s+)?(\d+)", filename, re.I)
+                if ep_match:
+                    ep_num = ep_match.group(1).lstrip('0') or '1'
+                title_match = re.search(r"\d+\s*-\s*([^\[\.]+)", filename)
+                if title_match:
+                    title_query = title_match.group(1).strip()
+            if not title_query and text:
+                title_query = text.split('\n')[0].split('|')[0].strip()
+                if not ep_num:
+                    ep_match = re.search(r"Episode[:\s]*(\d+)", text, re.I)
+                    if ep_match:
+                        ep_num = ep_match.group(1)
+            return title_query, ep_num
+
+        async def _send_banner(title_query: str, ep_num: str):
+            """Fetch AniList info and post a banner photo. One banner per (anime, episode)."""
+            if not title_query:
+                return
+
+            logger.info(f"Analyzing for banner: '{title_query}' Ep: '{ep_num}'")
+            search_data = await fetch_anilist(SEARCH_QUERY, {"search": title_query})
+            results = search_data.get("data", {}).get("Page", {}).get("media", [])
+            if not results:
+                return
+
+            media     = results[0]
+            anime_id  = str(media["id"])
+            ep_key    = ep_num or "1"
+            cache_key = (anime_id, ep_key)
+
+            now = time.time()
+            already_sent = (
+                cache_key in last_posted_banners
+                and (now - last_posted_banners[cache_key]) < 300
+            )
+            if already_sent or cache_key in banner_in_progress:
+                reason = "in-progress" if cache_key in banner_in_progress else "already sent"
+                logger.info(f"Skipping banner ({reason}): {title_query} Ep {ep_key}")
+                return
+
+            banner_in_progress.add(cache_key)
+            try:
+                full_data  = await fetch_anilist(DETAIL_QUERY, {"id": int(anime_id)})
+                full_media = full_data["data"]["Media"]
+                caption    = build_caption(full_media, ep_key)
+                cover_url  = (
+                    (full_media.get("coverImage") or {}).get("extraLarge")
+                    or (full_media.get("coverImage") or {}).get("large")
+                )
+                if cover_url:
+                    async with httpx.AsyncClient(timeout=20) as c:
+                        cover_bytes = (await c.get(cover_url)).content
+                    banner_bytes = generate_banner(full_media, cover_bytes)
+                    await client.send_file(
+                        BOT_CHANNEL,
+                        banner_bytes,
+                        caption=caption,
+                        parse_mode='markdown',
+                        force_document=False,  # send as photo, not document
+                        attributes=[],
+                    )
+                    last_posted_banners[cache_key] = time.time()
+                    logger.info(f"Banner sent for '{title_query}' Ep {ep_key}")
+            finally:
+                banner_in_progress.discard(cache_key)
+
+        async def _flush_album(grouped_id: int):
+            """Wait for ALBUM_WAIT seconds, then forward all collected album messages."""
+            await asyncio.sleep(ALBUM_WAIT)
+            album = pending_albums.pop(grouped_id, None)
+            if not album:
+                return
+            messages = sorted(album["messages"], key=lambda m: m.id)
+            logger.info(f"Flushing album {grouped_id}: {len(messages)} file(s)")
+            try:
+                await client.forward_messages(BOT_CHANNEL, messages, drop_author=True)
+                logger.info(f"Album {grouped_id} forwarded ({len(messages)} files).")
+            except Exception as e:
+                logger.error(f"Album forward error: {e}")
+
         @client.on(events.NewMessage(chats=SOURCE_CH_ID))
         async def forward_media(event):
             if not event.message.media:
                 return
 
             try:
-                # 1. Extract Info
-                text = event.message.text or ""
-                filename = event.message.file.name if event.message.file else ""
-                
-                logger.info(f"New media detected! Text: '{text[:30]}...', File: '{filename}'")
-                
-                # Simple extraction logic: prioritize text before '|' or first line
-                # Then look for episode numbers
-                title_query = ""
-                ep_num = ""
+                text       = event.message.text or ""
+                filename   = event.message.file.name if event.message.file else ""
+                grouped_id = event.message.grouped_id  # None for standalone files
 
-                # Try to get episode from filename (e.g., S1 01 - Name)
-                if filename:
-                    ep_match = re.search(r"(?:S\d+\s+)?(\d+)", filename, re.I)
-                    if ep_match:
-                        ep_num = ep_match.group(1).lstrip('0') or '1'
-                    
-                    # Try to extract title between episode and quality
-                    title_match = re.search(r"\d+\s*-\s*([^\[\.]+)", filename)
-                    if title_match:
-                        title_query = title_match.group(1).strip()
+                logger.info(
+                    f"New media | grouped_id={grouped_id} "
+                    f"file='{filename}' text='{text[:30]}...'"
+                )
 
-                if not title_query and text:
-                    title_query = text.split('\n')[0].split('|')[0].strip()
-                    if not ep_num:
-                        ep_match = re.search(r"Episode[:\s]*(\d+)", text, re.I)
-                        if ep_match:
-                            ep_num = ep_match.group(1)
+                title_query, ep_num = _extract_title_ep(text, filename)
 
-                # 2. Automated Banner Logic
-                if title_query:
-                    logger.info(f"Analyzing for banner: '{title_query}' Ep: '{ep_num}'")
-                    
-                    # Search AniList
-                    search_data = await fetch_anilist(SEARCH_QUERY, {"search": title_query})
-                    results = search_data.get("data", {}).get("Page", {}).get("media", [])
-                    
-                    if results:
-                        media = results[0]
-                        anime_id = str(media["id"])
-                        ep_key = ep_num or "1"
-                        cache_key = (anime_id, ep_key)
+                # ── ALBUM (multiple files sent together) ──────────────────────
+                if grouped_id is not None:
+                    if grouped_id not in pending_albums:
+                        # First message of this album → send banner once
+                        pending_albums[grouped_id] = {"messages": [], "task": None}
+                        await _send_banner(title_query, ep_num)
 
-                        # Check if we posted this recently (within 5 minutes)
-                        import time
-                        now = time.time()
-                        if cache_key not in last_posted_banners or (now - last_posted_banners[cache_key] > 300):
-                            logger.info(f"Generating automated banner for {title_query} Ep {ep_key}")
-                            
-                            # Get full details
-                            full_data = await fetch_anilist(DETAIL_QUERY, {"id": int(anime_id)})
-                            full_media = full_data["data"]["Media"]
-                            
-                            caption = build_caption(full_media, ep_key)
-                            cover_url = (full_media.get("coverImage") or {}).get("extraLarge") or (full_media.get("coverImage") or {}).get("large")
-                            
-                            if cover_url:
-                                async with httpx.AsyncClient(timeout=20) as c:
-                                    img_resp = await c.get(cover_url)
-                                    cover_bytes = img_resp.content
-                                banner_bytes = generate_banner(full_media, cover_bytes)
-                                
-                                # Use Telethon to send the banner (file)
-                                await client.send_file(
-                                    BOT_CHANNEL, 
-                                    banner_bytes, 
-                                    caption=caption, 
-                                    parse_mode='markdown'
-                                )
-                                last_posted_banners[cache_key] = now
-                
-                # 3. Finally forward the file
-                logger.info(f"Forwarding media to {BOT_CHANNEL}")
-                await client.forward_messages(BOT_CHANNEL, event.message, drop_author=True)
+                    pending_albums[grouped_id]["messages"].append(event.message)
+
+                    # Cancel previous timer and restart it (wait for remaining files)
+                    existing = pending_albums[grouped_id].get("task")
+                    if existing and not existing.done():
+                        existing.cancel()
+                    pending_albums[grouped_id]["task"] = asyncio.create_task(
+                        _flush_album(grouped_id)
+                    )
+
+                # ── SINGLE FILE ───────────────────────────────────────────────
+                else:
+                    await _send_banner(title_query, ep_num)
+                    logger.info(f"Forwarding single file to {BOT_CHANNEL}")
+                    await client.forward_messages(
+                        BOT_CHANNEL, event.message, drop_author=True
+                    )
 
             except Exception as e:
                 logger.error(f"Forwarding/Banner error: {e}")
-        
+
         await client.connect()
         if not await client.is_user_authorized():
             logger.error("UserBot is NOT authorized! Set SESSION_STRING env variable on Render.")
-            logger.error("Run the bot locally first to generate a session, then encode it.")
-            client = None  # Disable userbot, still allow PTB bot to run
+            client = None
         else:
             logger.info("UserBot authorized and listening to source channel.")
 
-
-    # 3. Start PTB polling
     await app.initialize()
     await app.start()
     if app.updater:
         await app.updater.start_polling()
     logger.info("Bot running — Auto-Forwarder + Banner Manager")
 
-    # 4. Keep alive
     try:
         if client:
             await client.run_until_disconnected()
