@@ -65,7 +65,7 @@ async def main() -> None:
             if event.message.media:
                 try:
                     logger.info(f"Forwarding media from source channel ({SOURCE_CH_ID}) to {BOT_CHANNEL}")
-                    await client.forward_messages(BOT_CHANNEL, event.message)
+                    await client.forward_messages(BOT_CHANNEL, event.message, drop_author=True)
                 except Exception as e:
                     logger.error(f"Forwarding error: {e}")
         
