@@ -4,6 +4,7 @@
 # Telethon session files (Sensitive)
 *.session
 *.session-journal
+session_b64.txt
 
 # Python
 __pycache__/

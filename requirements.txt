@@ -2,4 +2,3 @@ python-telegram-bot[job-queue]==21.6
 httpx
 Pillow
 python-dotenv
-telethon
