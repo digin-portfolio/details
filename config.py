@@ -24,7 +24,7 @@ ANILIST_API    = "https://graphql.anilist.co"
 BANNER_W, BANNER_H = 1200, 630
 WATCHLIST_FILE = "watchlist.json"
 
-BOT_CHANNEL = int(os.getenv("BOT_CHANNEL", "-1003193032701"))
+BOT_CHANNEL = int(os.getenv("BOT_CHANNEL", "-1003193032701 -1003193032701"))
 THUMBNAIL_PATH = os.getenv("THUMBNAIL", r"C:\Users\hhp\ANIMEFETCHER\thumb.jpg")
 
 SCHEDULE_GROUP_ID = int(os.getenv("SCHEDULE_GROUP_ID", "-1001874426493"))
